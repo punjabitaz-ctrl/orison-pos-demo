@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0f2a42">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Orison POS">
+  <title>Orison POS — Demo</title>
+  <meta name="description" content="Offline-first, mobile point of sale for Orison Electronics.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="demo/demo.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <div class="main">
+      <header id="appbar" class="appbar hidden"></header>
+      <div id="screen" class="screen"></div>
+      <footer class="app-credit">An AYiN Advisors Project</footer>
+    </div>
+    <div id="cartbar" class="cartbar hidden" aria-live="polite"></div>
+    <nav id="tabbar" class="tabbar hidden" aria-label="Primary"></nav>
+    <aside id="sidebar" class="sidebar" aria-label="Primary">
+      <div class="sb-top">
+        <div class="sb-title">
+          <div class="sb-brand" aria-hidden="true"></div>
+          <span class="sb-word">Orison <em>POS</em></span>
+        </div>
+        <button id="sbToggle" class="sb-toggle" aria-label="Toggle navigation" title="Toggle navigation">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <nav id="sbNav" class="sb-nav"></nav>
+    </aside>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="modal"></div>
+  <div id="sheet"></div>
+
+  <script src="demo/boot.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

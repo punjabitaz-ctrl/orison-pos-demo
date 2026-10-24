@@ -1,0 +1,360 @@
+'use strict';
+
+/* Sync engine: push the local outbox (offline-safe), pull catalog/config from
+   the server, and notify the UI on state changes. Mirrors the "append-only
+   sync_outbox" pattern from the architecture doc. */
+
+import { idb } from './db.js';
+import { $t } from './lang.js';
+import { api } from './api.js';
+import { toast, beep, setMoneyFormat } from './ui.js';
+
+export const SYNC_EVENT = 'orison:sync';
+
+function emit(detail) {
+  window.dispatchEvent(new CustomEvent(SYNC_EVENT, { detail }));
+}
+
+function meta() {
+  return (idb.get('meta', 'config') || Promise.resolve(null)).then((m) => m || {});
+}
+
+export async function getDeviceId() {
+  const m = await meta();
+  if (!m.deviceId) {
+    m.deviceId = (crypto.randomUUID ? crypto.randomUUID() : 'dev-' + Math.random().toString(36).slice(2));
+    await idb.put('meta', m, 'config');
+  }
+  return m.deviceId;
+}
+
+export async function setServerUrl(url) {
+  const m = await meta();
+  m.serverUrl = url || '';
+  await idb.put('meta', m, 'config');
+}
+
+export async function setAppToken(token) {
+  const m = await meta();
+  m.appToken = token || '';
+  await idb.put('meta', m, 'config');
+}
+
+export async function setSyncInterval(minutes) {
+  const m = await meta();
+  m.syncIntervalMin = Math.max(1, Number(minutes) || 30);
+  await idb.put('meta', m, 'config');
+  window.dispatchEvent(new CustomEvent('orison:sync-interval'));
+}
+
+export async function getSyncState() {
+  const m = await meta();
+  const outbox = await idb.getAll('outbox');
+  const pending = outbox.filter((o) => o.status === 'PENDING').length;
+  return {
+    deviceId: m.deviceId || null,
+    lastSyncAt: m.lastSyncAt || null,
+    pending,
+    online: navigator.onLine,
+  };
+}
+
+/* One store, one money format. Every path that learns the store config — boot,
+   login, a sync pull — installs it, so a terminal never prints last week's
+   currency after the admin changes it. */
+export function applyStoreFormat(store) {
+  if (!store) return;
+  setMoneyFormat({ locale: store.locale, currency: store.currency });
+}
+
+export async function pull() {
+  const data = await api.get('/api/sync/pull');
+  if (!data || !data.products) throw new Error('Empty sync response');
+
+  await idb.bulkPut('products', await mergeProducts(data.products), (p) => p.id);
+  await idb.bulkPut('users', data.users, (u) => u.id);
+  await idb.put('meta', {
+    ...(await meta()),
+    store: data.store,
+    watermark: data.watermark || new Date().toISOString(),
+    lastSyncAt: new Date().toISOString(),
+  }, 'config');
+
+  applyStoreFormat(data.store);
+  emit({ kind: 'pull', products: data.products.length });
+  return data;
+}
+
+/* Server is stock-truth; but keep the local lastSoldAt if it's newer than the
+   server's (a sale just completed locally before its push round-tripped). */
+async function mergeProducts(serverProducts) {
+  const local = await idb.getAll('products').catch(() => []);
+  const byId = new Map(local.map((p) => [String(p.id), p]));
+  return (serverProducts || []).map((sp) => {
+    const lo = byId.get(String(sp.id));
+    if (!lo || !lo.lastSoldAt) return sp;
+    if (!sp.lastSoldAt) return { ...sp, lastSoldAt: lo.lastSoldAt };
+    return new Date(lo.lastSoldAt) > new Date(sp.lastSoldAt) ? { ...sp, lastSoldAt: lo.lastSoldAt } : sp;
+  });
+}
+
+export async function mergeProductLocal(product) {
+  await idb.put('products', product, product.id);
+  emit({ kind: 'product', product });
+}
+
+export async function push() {
+  await pushPunches().catch(() => {});
+  const deviceId = await getDeviceId();
+  const outbox = await idb.getAll('outbox');
+  const pending = outbox
+    .filter((o) => o.status === 'PENDING' && o.kind !== 'punch' && (o.attempts || 0) < 6)
+    .map((o) => o.payload);
+
+  if (!pending.length) {
+    await touchMeta();
+    return { pushed: 0, voided: 0 };
+  }
+
+  let res;
+  try {
+    res = await api.post('/api/sync/push', { deviceId, batch: pending });
+  } catch (err) {
+    if (err && err.offline) {
+      emit({ kind: 'offline', pending: pending.length });
+      return { pushed: 0, voided: 0, offline: true };
+    }
+    throw err;
+  }
+
+  let voided = 0;
+  let flagged = 0;
+  const results = res.results || [];
+  const byClientTxId = {};
+  for (const r of results) byClientTxId[r.clientTxId] = r;
+
+  for (const entry of outbox.filter((o) => o.status === 'PENDING' && o.kind !== 'punch')) {
+    const r = byClientTxId[entry.payload.clientTxId];
+    if (!r) continue;
+    if (r.accepted) {
+      const flags = (r.conflicts || [])
+        .map((c) => c.conflictId ? c.reason : null)
+        .filter(Boolean);
+      if (flags.length) flagged += 1;
+      await idb.put('outbox', { ...entry, status: 'SYNCED', serverId: r.transactionId, receiptNo: r.receiptNo || '', flags }, entry.clientTxId);
+      await markTransaction(entry.clientTxId, { status: 'SYNCED', serverId: r.transactionId, receiptNo: r.receiptNo || '', flags });
+    } else {
+      voided += 1;
+      await rollbackLocal(entry.payload);
+      await idb.put('outbox', {
+        ...entry,
+        status: 'VOIDED',
+        voidedAt: new Date().toISOString(),
+        reason: (r.conflicts || []).map((c) => `${c.serialNumber || ''} ${c.reason}`.trim()).join(', ') || r.reason || 'rejected',
+      }, entry.clientTxId);
+      await markTransaction(entry.clientTxId, { status: 'VOIDED', voidReason: $t('Server rejected transaction') });
+    }
+  }
+
+  await touchMeta();
+  if (flagged > 0) emit({ kind: 'conflict', flagged });
+  emit({ kind: 'push', pushed: results.filter((r) => r.accepted).length, voided });
+  return { pushed: results.filter((r) => r.accepted).length, voided, flagged, results };
+}
+
+async function touchMeta() {
+  const m = await meta();
+  m.lastSyncAt = new Date().toISOString();
+  await idb.put('meta', m, 'config');
+}
+
+async function markTransaction(clientTxId, patch) {
+  const t = await idb.get('transactions', clientTxId);
+  if (t) await idb.put('transactions', { ...t, ...patch }, clientTxId);
+}
+
+async function restoreLocalStock(payload) {
+  for (const item of payload.items || []) {
+    const prod = await idb.get('products', item.productId);
+    if (!prod) continue;
+    if (prod.isSerialized) {
+      if (item.serialNumber && !prod.serials.includes(item.serialNumber)) {
+        prod.serials.push(item.serialNumber);
+      }
+    } else {
+      prod.onHand = (prod.onHand || 0) + (item.quantity || 1);
+    }
+    await idb.put('products', prod, prod.id);
+  }
+  emit({ kind: 'stock-restored' });
+}
+
+/* Reverse whatever the local optimistic application did when the server rejects
+   a queued transaction. Refunds un-restored stock; sales re-restore it; payouts
+   only ever touch money records, never stock. */
+async function rollbackLocal(payload) {
+  const kind = payload.kind || 'sale';
+  if (kind === 'payout') {
+    emit({ kind: 'payout-rolled-back' });
+    return;
+  }
+  for (const item of payload.items || []) {
+    const prod = await idb.get('products', item.productId);
+    if (!prod) continue;
+    if (prod.isSerialized) {
+      if (kind === 'refund') {
+        const i = prod.serials.indexOf(item.serialNumber);
+        if (i >= 0) prod.serials.splice(i, 1);
+      } else if (item.serialNumber && !prod.serials.includes(item.serialNumber)) {
+        prod.serials.push(item.serialNumber);
+      }
+    } else if (kind === 'refund') {
+      if (prod.onHand || prod.onHand === 0) prod.onHand = Math.max(0, prod.onHand - (item.quantity || 1));
+    } else {
+      prod.onHand = (prod.onHand || 0) + (item.quantity || 1);
+    }
+    await idb.put('products', prod, prod.id);
+  }
+  emit({ kind: 'stock-restored' });
+}
+
+export function newClientTxId() {
+  return crypto.randomUUID ? crypto.randomUUID() : 'tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+}
+
+export async function enqueueTransaction(tx) {
+  /* A transaction that needed a manager's approval was given its id before
+     the approval was asked for, because the approval is bound to that id. */
+  const clientTxId = tx.clientTxId || newClientTxId();
+  const payload = {
+    clientTxId,
+    userId: tx.userId,
+    kind: tx.kind || 'sale',
+    originalClientTx: tx.originalClientTx || '',
+    counterparty: tx.counterparty || '',
+    customerId: tx.customerId || '',
+    deviceId: await getDeviceId(),
+    grandTotal: tx.grandTotal,
+    discountPct: tx.discountPct,
+    tenders: tx.tenders,
+    note: tx.note || '',
+    createdAt: tx.createdAt || new Date().toISOString(),
+    /* where the sale happened, so marketplace stock does not drift from the
+       shelf and the two can be told apart in reports afterwards. */
+    channel: tx.channel || 'in_store',
+    externalRef: tx.externalRef || '',
+    items: tx.items,
+  };
+  if (tx.approval) payload.approval = tx.approval;
+  if (tx.approvals && Object.keys(tx.approvals).length) payload.approvals = tx.approvals;
+  await idb.put('outbox', {
+    clientTxId,
+    payload,
+    status: 'PENDING',
+    attempts: 0,
+    createdAt: payload.createdAt,
+  }, clientTxId);
+  await idb.put('transactions', {
+    id: clientTxId,
+    status: 'PENDING',
+    kind: payload.kind,
+    originalClientTx: payload.originalClientTx,
+    counterparty: payload.counterparty,
+    items: tx.items,
+    tenders: tx.tenders,
+    total: tx.grandTotal,
+    subtotal: tx.subtotal,
+    taxAmount: tx.taxAmount,
+    discountPct: tx.discountPct,
+    cashier: tx.cashier,
+    userId: tx.userId,
+    customerId: tx.customerId || '',
+    createdAt: payload.createdAt,
+  }, clientTxId);
+  emit({ kind: 'queued', clientTxId });
+  return clientTxId;
+}
+
+export async function outboxStats() {
+  const outbox = await idb.getAll('outbox');
+  return {
+    pending: outbox.filter((o) => o.status === 'PENDING').length,
+    synced: outbox.filter((o) => o.status === 'SYNCED').length,
+    voided: outbox.filter((o) => o.status === 'VOIDED').length,
+  };
+}
+
+/* Push the local outbox right now, but only when connected. Prefer this over
+   syncNow() at sale completion: no pull round-trip, no toast, just ship the
+   just-completed sale. Offline devices skip it and catch up via the online
+   event + the periodic window. */
+export async function pushImmediate() {
+  if (!navigator.onLine) return { pushed: 0, voided: 0, offline: true };
+  return push();
+}
+
+export async function syncNow() {
+  let pulled = false;
+  try {
+    if (navigator.onLine) {
+      await pull();
+      pulled = true;
+    }
+  } catch (err) { /* offline or server down */ }
+
+  try {
+    const res = await push();
+    if (!pulled && res && res.pushed) pulled = true;
+  } catch (err) {
+    emit({ kind: 'offline', pending: (await outboxStats()).pending });
+    return { offline: true };
+  }
+
+  if (pulled) {
+    const stats = await outboxStats();
+    if (stats.pending === 0) {
+      toast($t('Synced'), 'ok', 1800);
+      beep('ok');
+    }
+    return stats;
+  }
+  return null;
+}
+/* Time-clock punches taken while offline. They ride the same outbox as sales:
+   stored with the moment they happened, sent when the line returns. A shop that
+   can sell offline must be able to clock in offline. */
+export async function queuePunch(punch) {
+  const id = 'punch-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now());
+  await idb.put('outbox', {
+    clientTxId: id,
+    kind: 'punch',
+    punch: { at: punch.at, deviceId: punch.deviceId, note: punch.note || '' },
+    status: 'PENDING',
+    attempts: 0,
+    createdAt: punch.at,
+  }, id);
+  emit({ kind: 'queued', what: 'punch' });
+  return id;
+}
+
+/* Sent before the sale batch so the floor record is right even if a sale is
+   rejected. A punch the server refuses (already clocked in, say) is dropped
+   rather than retried forever - the state it wanted is already true. */
+export async function pushPunches() {
+  if (!navigator.onLine) return { sent: 0 };
+  const outbox = await idb.getAll('outbox');
+  const queued = outbox.filter((o) => o.kind === 'punch' && o.status === 'PENDING');
+  let sent = 0;
+  for (const entry of queued) {
+    try {
+      await api.post('/api/timeclock/punch', entry.punch);
+      await idb.delete('outbox', entry.clientTxId);
+      sent += 1;
+    } catch (err) {
+      if (err && err.offline) break;
+      await idb.delete('outbox', entry.clientTxId);
+    }
+  }
+  if (sent) emit({ kind: 'punch', sent });
+  return { sent };
+}

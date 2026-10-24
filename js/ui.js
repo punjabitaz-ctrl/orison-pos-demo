@@ -1,0 +1,331 @@
+'use strict';
+
+import { $t } from './lang.js';
+
+/* Shared UI helpers: money formatting, dom builder, toasts, modals, sheets,
+   scan beeps, and camera barcode reading (BarcodeDetector when available). */
+
+/* Money formatting is store-wide: one locale, one currency, set once at first
+   run and applied everywhere money is printed. `fmt(n)` keeps its one-argument
+   shape because every screen calls it; the format lives here and `app.js`
+   installs the store's choice at boot. Until a store is set up this is en-US /
+   USD, which is also what a fresh workbook reports. */
+const moneyFormat = { locale: 'en-US', currency: 'USD' };
+let moneyFormatter = null;
+
+export function setMoneyFormat({ locale, currency } = {}) {
+  if (locale) moneyFormat.locale = String(locale);
+  if (currency) moneyFormat.currency = String(currency).toUpperCase();
+  moneyFormatter = null;
+  return { ...moneyFormat };
+}
+
+export function getMoneyFormat() {
+  return { ...moneyFormat };
+}
+
+/* Money is a left-to-right run even inside Arabic or Urdu: "$0.00" dropped
+   into a right-to-left sentence would otherwise read "0.00$". Wrapping it in
+   Unicode isolates keeps the run intact wherever the text is shown - on
+   screen, on a raster receipt, in a WhatsApp message. Sinks that can only
+   carry ASCII (ESC/POS text, the Courier PDF, CSV) strip them again. */
+const LRI = '\u2066';
+const PDI = '\u2069';
+export function isolateLtr(s) {
+  return LRI + s + PDI;
+}
+export function stripIsolates(s) {
+  return String(s == null ? '' : s).replace(/[\u2066-\u2069]/g, '');
+}
+
+function screenIsRtl() {
+  return typeof document !== 'undefined' && document.documentElement && document.documentElement.dir === 'rtl';
+}
+
+/* What the screen shows: isolated when the screen reads right to left. */
+export function fmt(n, sign = '') {
+  const s = sign + fmtPlain(n);
+  return screenIsRtl() ? isolateLtr(s) : s;
+}
+
+/* A formatter for a document of a given direction, such as a receipt that
+   follows the store's language rather than the cashier's screen. */
+export function fmtFor(dir) {
+  return dir === 'rtl' ? (n) => isolateLtr(fmtPlain(n)) : fmtPlain;
+}
+
+export function fmtPlain(n) {
+  const v = Number(n) || 0;
+  if (!moneyFormatter) {
+    try {
+      moneyFormatter = new Intl.NumberFormat(moneyFormat.locale, { style: 'currency', currency: moneyFormat.currency });
+    } catch (_) {
+      /* an unusable locale/currency pair must not take the register down: fall
+         back to the default rather than throwing on every price on screen. */
+      moneyFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+    }
+  }
+  return moneyFormatter.format(v);
+}
+
+/* The currency's own symbol, for a field label like "Amount (₦)". Derived
+   from the same formatter so it always agrees with what fmt() prints. */
+export function currencySymbol() {
+  try {
+    const parts = new Intl.NumberFormat(moneyFormat.locale, {
+      style: 'currency', currency: moneyFormat.currency, currencyDisplay: 'narrowSymbol',
+    }).formatToParts(0);
+    const hit = parts.find((p) => p.type === 'currency');
+    if (hit) return hit.value;
+  } catch (_) { /* fall through */ }
+  return moneyFormat.currency;
+}
+
+/* Label for one rung of the cash ladder: "₦1,000", "$0.25". Whole amounts drop
+   the decimals so a note ladder reads like notes. */
+export function denomLabel(value) {
+  const v = Number(value) || 0;
+  const decimals = Number.isInteger(v) ? 0 : 2;
+  try {
+    return new Intl.NumberFormat(moneyFormat.locale, {
+      style: 'currency', currency: moneyFormat.currency, currencyDisplay: 'narrowSymbol',
+      minimumFractionDigits: decimals, maximumFractionDigits: decimals,
+    }).format(v);
+  } catch (_) {
+    return currencySymbol() + v.toFixed(decimals);
+  }
+}
+
+export function fmtQty(n) {
+  return String(Number(n) || 0);
+}
+
+export function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+let _ac = null;
+export function beep(kind = 'ok') {
+  try {
+    if (!_ac) _ac = new (window.AudioContext || window.webkitAudioContext)();
+    if (_ac.state === 'suspended') _ac.resume();
+    const ctx = _ac;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const now = ctx.currentTime;
+    if (kind === 'ok') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1320, now);
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.exponentialRampToValueAtTime(0.25, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+      osc.start(now); osc.stop(now + 0.13);
+    } else {
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(220, now);
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+      osc.start(now); osc.stop(now + 0.26);
+    }
+  } catch (_) { /* audio unavailable */ }
+}
+
+export function debounce(fn, ms = 250) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+const TOAST_TYPES = { info: '', ok: 't-ok', warn: 't-warn', err: 't-err' };
+export function toast(msg, type = 'info', ms = 3200) {
+  const wrap = document.getElementById('toasts');
+  if (!wrap) return;
+  const el = document.createElement('div');
+  el.className = 'toast ' + (TOAST_TYPES[type] || '');
+  el.textContent = msg;
+  wrap.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('in'));
+  setTimeout(() => {
+    el.classList.remove('in');
+    setTimeout(() => el.remove(), 300);
+  }, ms);
+}
+
+/* Escape closes the top-most dialog, and opening one moves focus into it.
+   Without this a keyboard or screen-reader user on the desktop shell can tab
+   straight out of an open dialog into the register behind it. */
+let escHandler = null;
+
+function armDialog(rootEl, panel, close) {
+  if (!escHandler) {
+    escHandler = (e) => {
+      if (e.key !== 'Escape') return;
+      const sheet = document.getElementById('sheet');
+      const modal = document.getElementById('modal');
+      if (sheet && sheet.firstChild) closeSheet();
+      else if (modal && modal.firstChild) closeModal();
+    };
+    document.addEventListener('keydown', escHandler);
+  }
+  rootEl.querySelectorAll('[data-close]').forEach((el) => el.addEventListener('click', (e) => {
+    if (e.target === el) close();
+  }));
+  if (panel) {
+    panel.setAttribute('aria-modal', 'true');
+    panel.tabIndex = -1;
+    const first = panel.querySelector('input:not([type="hidden"]), select, textarea, button');
+    /* focus the first field on a pointer-less device only: pulling focus to an
+       input on a phone throws the keyboard up over the dialog. */
+    if (first && !('ontouchstart' in window) && first.tagName !== 'BUTTON') first.focus();
+    else panel.focus();
+  }
+  return panel;
+}
+
+export function openModal(html) {
+  const root = document.getElementById('modal');
+  root.innerHTML = `<div class="modal-backdrop" data-close><div class="modal" role="dialog">${html}</div></div>`;
+  return armDialog(root, root.querySelector('.modal'), closeModal);
+}
+
+export function closeModal() {
+  document.getElementById('modal').innerHTML = '';
+}
+
+export function openSheet(html) {
+  const root = document.getElementById('sheet');
+  root.innerHTML = `<div class="sheet-backdrop" data-close><div class="sheet" role="dialog">${html}</div></div>`;
+  return armDialog(root, root.querySelector('.sheet'), closeSheet);
+}
+
+export function closeSheet() {
+  document.getElementById('sheet').innerHTML = '';
+}
+
+export function hasBarcodeDetector() {
+  return 'BarcodeDetector' in window;
+}
+
+/* Camera barcode/IMEI reader. Returns a promise that resolves the decoded
+   string or rejects with a friendly message. */
+export function scanFromCamera() {
+  return new Promise((resolve, reject) => {
+    if (!hasBarcodeDetector()) {
+      reject(new Error($t('Camera scanning unsupported on this device — use the search bar with a handheld scanner.')));
+      return;
+    }
+    const detector = new BarcodeDetector({
+      formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'],
+    });
+
+    const modal = openModal(`
+      <div class="scan-stage">
+        <video id="scanVideo" autoplay playsinline muted></video>
+        <div class="scan-frame"></div>
+        <p class="scan-hint">${$t('Point the camera at the barcode or IMEI label')}</p>
+        <div class="scan-actions">
+          <button class="btn btn-ghost" data-close>${$t('Cancel')}</button>
+        </div>
+      </div>
+    `);
+    const video = modal.querySelector('#scanVideo');
+    let stream = null;
+    let done = false;
+    let raf = 0;
+
+    function finish(value, err) {
+      if (done) return;
+      done = true;
+      cancelAnimationFrame(raf);
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      closeModal();
+      if (err) reject(err); else resolve(value);
+    }
+
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
+      audio: false,
+    }).then((s) => {
+      stream = s;
+      video.srcObject = s;
+      video.play().catch(() => {});
+      const tick = async () => {
+        if (done) return;
+        try {
+          const codes = await detector.detect(video);
+          if (codes && codes.length) {
+            finish(codes[0].rawValue, null);
+            return;
+          }
+        } catch (_) { /* detection hiccup */ }
+        raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    }).catch((e) => {
+      finish(null, new Error($t('Camera unavailable: {reason}', { reason: e && e.message ? e.message : $t('permission denied') })));
+    });
+
+    const closeBtn = modal.querySelector('[data-close]');
+    if (closeBtn) closeBtn.addEventListener('click', () => finish(null, new Error($t('Scan cancelled'))));
+  });
+}
+
+/* Build a DOM element tree from a template string. */
+export function el(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
+}
+/* Loading placeholder that matches the shape of the content it stands in for,
+   so a slow screen keeps its layout instead of collapsing to a spinner. */
+export function skeleton(kind = 'rows', count = 3) {
+  const one = {
+    rows: '<div class="sk-row"><div class="sk sk-avatar"></div><div class="sk-lines"><div class="sk sk-line"></div><div class="sk sk-line short"></div></div></div>',
+    kpis: '<div class="sk sk-kpi"></div>',
+    chart: '<div class="sk sk-chart"></div>',
+    table: '<div class="sk sk-trow"></div>',
+  }[kind] || '<div class="sk sk-line"></div>';
+  return `<div class="skeleton ${kind === 'kpis' ? 'sk-kpis' : ''}" aria-hidden="true">${one.repeat(Math.max(1, count))}</div>`;
+}
+
+/* One empty-state component for every screen: a glyph, what is missing, why,
+   and (when there is one) the action that fills it. */
+export function emptyState({ icon = '·', title = $t('Nothing here yet'), body = '', action = '', actionId = '' } = {}) {
+  return `
+    <div class="empty-state">
+      <div class="es-icon" aria-hidden="true">${esc(icon)}</div>
+      <h4>${esc(title)}</h4>
+      ${body ? `<p>${esc(body)}</p>` : ''}
+      ${action && actionId ? `<button class="btn btn-sm" id="${esc(actionId)}">${esc(action)}</button>` : ''}
+    </div>`;
+}
+
+/* One CSV cell, safe in two ways at once: a leading formula character is
+   neutralised with an apostrophe so a spreadsheet treats the value as text
+   (a "name" of `=HYPERLINK(...)` must not execute in the bookkeeper's Excel),
+   and the value is always quoted with embedded quotes doubled so a comma,
+   quote or newline inside a name cannot shift the columns. Mirrors the
+   server's `csvCell_`. */
+export function csvCell(v) {
+  let t = stripIsolates(v);
+  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;
+  return '"' + t.replace(/"/g, '""') + '"';
+}
+
+export function csvRows(rows) {
+  return (rows || []).map((r) => (r || []).map(csvCell).join(',')).join('\n');
+}
+
+export function downloadCsv(filename, text) {
+  const blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}

@@ -1,0 +1,283 @@
+'use strict';
+
+/* Composed UI shared across screens: navigation buttons, launcher tiles and the
+   app header. ui.js holds primitives that know nothing about this app; this is
+   the layer that knows what a destination is. Every function is a pure string
+   builder, so what the navigation renders can be asserted without a browser. */
+
+import { esc } from './ui.js';
+
+const SVG = (body, cls = '') => `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"${cls ? ` class="${cls}"` : ''}>${body}</svg>`;
+
+import { $t, $tn, N_ } from './lang.js';
+
+/* Role names are stored lowercase; these are the words people read. */
+const ROLE_LABELS = { admin: N_('Admin'), manager: N_('Manager'), cashier: N_('Cashier') };
+export function roleLabel(role) {
+  return ROLE_LABELS[String(role || '')] || String(role || '');
+}
+
+export const ICONS = {
+  menu: SVG('<rect x="3" y="3" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="3" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="3" y="14" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="14" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>'),
+  register: SVG('<rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M3 9h18M8 13h4M8 16h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  history: SVG('<circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v5l3.5 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  refund: SVG('<path d="M9 5L4 10l5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 10h9a6 6 0 010 12h-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>', 'flip-rtl'),
+  payout: SVG('<circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 17V7M9 14l3 3 3-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'),
+  pickup: SVG('<rect x="3" y="6" width="18" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.6"/><path d="M6 9.5v5M18 9.5v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  expense: SVG('<circle cx="9" cy="7.5" r="3.2" stroke="currentColor" stroke-width="1.6"/><path d="M3.2 20c.9-3.6 3.2-5.2 5.8-5.2 1.1 0 2.1.3 3 .9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M14 17.5h6M17 14.5v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'),
+  external: SVG('<path d="M3 7h13v10H3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M16 10h3l2 3v4h-5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="7" cy="18.5" r="1.6" stroke="currentColor" stroke-width="1.5"/><circle cx="17.5" cy="18.5" r="1.6" stroke="currentColor" stroke-width="1.5"/>'),
+  staff: SVG('<circle cx="9" cy="7.5" r="3.2" stroke="currentColor" stroke-width="1.6"/><path d="M3.2 20c.9-3.6 3.2-5.2 5.8-5.2 1 0 2 .25 2.9.75" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="16.8" cy="16.2" r="4.3" stroke="currentColor" stroke-width="1.6"/><path d="M16.8 14.2v2.2l1.5 1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  customers: SVG('<circle cx="9" cy="8" r="3.5" stroke="currentColor" stroke-width="1.6"/><path d="M3 20c1-4 3.5-5.5 6-5.5s5 1.5 6 5.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="17" cy="9" r="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M16 14.6c1.8.3 3.6 1.4 4.4 3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  inventory: SVG('<path d="M4 7l8-4 8 4-8 4-8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 7v10l8 4 8-4V7M12 11v10" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>'),
+  stockhealth: SVG('<rect x="3" y="4" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M3 9h18M3 14h4l2-3 2.5 4 2-4 1.5 3h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'),
+  serialtrace: SVG('<path d="M5 4h14v4H5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M5 16h14v4H5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 8v8M8 12h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  payroll: SVG('<rect x="2.5" y="6" width="19" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.6" stroke="currentColor" stroke-width="1.6"/><path d="M6 9.5v5M18 9.5v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  expenses: SVG('<path d="M6 3h9l4 4v14H6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 3v5h5M9 12h7M9 16h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  taxreturn: SVG('<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9.5 8h5M9.5 12h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  banking: SVG('<path d="M3 9.5 12 4l9 5.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M5 10v8m5-8v8m4-8v8m5-8v8M3 20h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  alerts: SVG('<path d="M12 3l9 17H3l9-17z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  purchases: SVG('<path d="M3 6h18l-2 12H5L3 6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 6l2 3h14l2-3M9 12h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'),
+  reports: SVG('<rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M8 16v-4M12 16V8M16 16v-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  dashboard: SVG('<rect x="3" y="3" width="8" height="10" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="13" y="3" width="8" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="15" width="8" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="13" y="11" width="8" height="10" rx="1.5" stroke="currentColor" stroke-width="1.6"/>'),
+  salesreport: SVG('<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 14v-2M12 14V8.5M15 14v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  tradein: SVG('<rect x="3" y="4" width="7" height="13" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M13 8h6m0 0-2.5-2.5M19 8l-2.5 2.5M19 15h-6m0 0 2.5-2.5M13 15l2.5 2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'),
+  accounts: SVG('<path d="M4 5h16v14H4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 5v14M7 9h2.5M7 12h2.5M14.5 9H17M14.5 12H17M14.5 15H17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  audit: SVG('<path d="M6 3h9l4 4v14H6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 3v5h5M9 12h6M9 16h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'),
+  repairs: SVG('<path d="M15.5 3.5a5 5 0 00-6.1 6.1L3.6 15.4a1.9 1.9 0 002.7 2.7l5.8-5.8a5 5 0 006.1-6.1l-2.8 2.8-2.4-.6-.6-2.4 2.8-2.8z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>'),
+  drawer: SVG('<rect x="3" y="9" width="18" height="11" rx="1.8" stroke="currentColor" stroke-width="1.6"/><path d="M3 13h18M10 16.5h4M6 9l2-5h8l2 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'),
+  settings: SVG('<circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M19 12a7 7 0 00-.1-1.2l2-1.5-2-3.4-2.4 1a7 7 0 00-2-1.2L14 3h-4l-.4 2.7a7 7 0 00-2 1.2l-2.5-1-2 3.4 2.1 1.5a7 7 0 000 2.4L3.1 14.6l2 3.4 2.5-1a7 7 0 002 1.2L10 21h4l.4-2.7a7 7 0 002-1.2l2.5 1 2-3.4-2.1-1.5c.1-.4.2-.8.2-1.2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>'),
+};
+
+const FALLBACK = SVG('<circle cx="12" cy="12" r="3.5" stroke="currentColor" stroke-width="1.7"/>');
+
+export function icon(id) {
+  return ICONS[id] || FALLBACK;
+}
+
+export function tile({ id, label } = {}) {
+  return `
+    <button class="mtile" data-go="${esc(id)}" type="button">
+      <span class="mtile-icon i-${esc(id)}">${icon(id)}</span>
+      <span class="mtile-label">${esc($t(label))}</span>
+    </button>`;
+}
+
+export function tileGrid(tiles) {
+  return `<div class="menu-grid">${(tiles || []).map((t) => tile(t)).join('')}</div>`;
+}
+
+export function navButton({ id, label, primary } = {}) {
+  return `
+    <button class="tab${primary ? ' tab-primary' : ''}" data-tab="${esc(id)}" aria-label="${esc($t(label))}" title="${esc($t(label))}">
+      ${icon(id)}
+      <span>${esc($t(label))}</span>
+      ${id === 'alerts' || id === 'menu' ? '<span class="tab-badge hidden"></span>' : ''}
+    </button>`;
+}
+
+export function appHeaderHtml({ storeName, userName, role } = {}) {
+  const name = String(userName || '').trim();
+  const initial = name ? name[0] : '·';
+  return `
+    <div class="ab-left">
+      <span class="ab-store">${esc(storeName || 'Orison POS')}</span>
+    </div>
+    <div class="ab-right">
+      <span id="appStatus" class="ab-status"><span class="dot"></span><span class="ab-status-text"></span></span>
+      <time id="appClock" class="ab-clock"></time>
+      <button id="appUser" class="ab-user" type="button" aria-label="${esc(name || $t('Account'))}" title="${esc(name)}${role ? ' · ' + esc($t(roleLabel(role))) : ''}">${esc(initial)}</button>
+    </div>`;
+}
+
+/* Category identity is a colour, since the catalog carries no images. Hashed
+   from the name so the same category is the same colour on every screen and
+   every terminal, with no palette to maintain. */
+const CAT_COLORS = ['#d97706', '#0ea5e9', '#059669', '#7c3aed', '#e11d48', '#0891b2', '#65a30d', '#c2410c', '#4f46e5', '#0d9488'];
+
+export function catColor(category) {
+  const c = String(category == null ? '' : category);
+  let n = 0;
+  for (let i = 0; i < c.length; i++) n = (n * 31 + c.charCodeAt(i)) >>> 0;
+  return CAT_COLORS[n % CAT_COLORS.length];
+}
+
+export function categoryChip({ label, active } = {}) {
+  const name = String(label == null ? '' : label);
+  const dot = name === 'All' ? '' : `<span class="chip-dot" style="background:${catColor(name)}"></span>`;
+  /* 'All' is the sentinel value; only its label is translated. */
+  return `<button class="chip${active ? ' on' : ''}" data-cat="${esc(name)}" type="button">${dot}${esc(name === 'All' ? $t('All') : name)}</button>`;
+}
+
+function lockedFlag(p) {
+  return p && (p.locked === true || p.locked === 1 || String(p.locked) === '1');
+}
+
+/* Category icons (v1.46.1). Categories are the shop's own free text, so a name
+   is matched by the words in it; the first rule that fits wins, and anything
+   unrecognised gets a price tag. */
+const S = 'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"';
+export const CATEGORY_ICONS = {
+  phones: SVG(`<rect x="7" y="2.5" width="10" height="19" rx="2.2" ${S}/><path d="M10.5 18.5h3" ${S}/>`),
+  tablets: SVG(`<rect x="4" y="3" width="16" height="18" rx="2.2" ${S}/><path d="M11 18h2" ${S}/>`),
+  laptops: SVG(`<rect x="4.5" y="5" width="15" height="10" rx="1.4" ${S}/><path d="M2.5 18.5h19l-1.5-3.5H4z" ${S}/>`),
+  monitors: SVG(`<rect x="3" y="4" width="18" height="12" rx="1.6" ${S}/><path d="M9 20h6M12 16v4" ${S}/>`),
+  audio: SVG(`<path d="M4 15v-3a8 8 0 0116 0v3" ${S}/><rect x="3" y="14" width="4.5" height="6.5" rx="1.6" ${S}/><rect x="16.5" y="14" width="4.5" height="6.5" rx="1.6" ${S}/>`),
+  wearables: SVG(`<rect x="6.5" y="6.5" width="11" height="11" rx="3" ${S}/><path d="M9 6.5L9.8 3h4.4l.8 3.5M9 17.5l.8 3.5h4.4l.8-3.5M12 10v2.2l1.5 1" ${S}/>`),
+  cables: SVG(`<path d="M9 3v4M15 3v4M7 7h10v4a5 5 0 01-10 0V7zM12 16v2.5a2.5 2.5 0 002.5 2.5H18" ${S}/>`),
+  power: SVG(`<rect x="3" y="7" width="15" height="10" rx="2" ${S}/><path d="M21 10.5v3M11 9l-2.5 3.5h3L9 15" ${S}/>`),
+  storage: SVG(`<path d="M7 3h7l4 4v14H7a1 1 0 01-1-1V4a1 1 0 011-1z" ${S}/><path d="M10 3v4M13 3v4M9.5 12h5v5h-5z" ${S}/>`),
+  gaming: SVG(`<path d="M7.5 8h9a4.5 4.5 0 014.4 5.4l-.6 3a2.4 2.4 0 01-4.2 1.1L14.5 16h-5l-1.6 1.5a2.4 2.4 0 01-4.2-1.1l-.6-3A4.5 4.5 0 017.5 8z" ${S}/><path d="M8 11v3M6.5 12.5h3M15.5 12h.01M17.5 13.5h.01" ${S}/>`),
+  cameras: SVG(`<path d="M3.5 8.5A1.5 1.5 0 015 7h2.5l1.5-2.5h6L16.5 7H19a1.5 1.5 0 011.5 1.5v9A1.5 1.5 0 0119 19H5a1.5 1.5 0 01-1.5-1.5z" ${S}/><circle cx="12" cy="13" r="3.4" ${S}/>`),
+  networking: SVG(`<path d="M2.5 9.5a14 14 0 0119 0M5.5 12.8a9.5 9.5 0 0113 0M8.6 16a5 5 0 016.8 0" ${S}/><path d="M12 19.5h.01" ${S}/>`),
+  smarthome: SVG(`<path d="M3.5 11L12 4l8.5 7M6 9.5V20h12V9.5" ${S}/><path d="M9.8 15.2a3.1 3.1 0 014.4 0M12 17.8h.01" ${S}/>`),
+  services: SVG(`<path d="M15.5 3.5a5 5 0 00-6.1 6.1L3.6 15.4a1.9 1.9 0 002.7 2.7l5.8-5.8a5 5 0 006.1-6.1l-2.8 2.8-2.4-.6-.6-2.4 2.8-2.8z" ${S}/>`),
+  accessories: SVG(`<path d="M12 3l7.5 3v5.5c0 4.7-3.2 8.3-7.5 9.5-4.3-1.2-7.5-4.8-7.5-9.5V6z" ${S}/><path d="M9 12l2 2 4-4" ${S}/>`),
+  preowned: SVG(`<path d="M20 12a8 8 0 01-14.3 4.9M4 12a8 8 0 0114.3-4.9" ${S}/><path d="M18.5 3.5v3.8h-3.8M5.5 20.5v-3.8h3.8" ${S}/>`),
+  printers: SVG(`<path d="M7 8V3.5h10V8M7 17H4.5A1.5 1.5 0 013 15.5v-6A1.5 1.5 0 014.5 8h15A1.5 1.5 0 0121 9.5v6a1.5 1.5 0 01-1.5 1.5H17" ${S}/><path d="M7 13.5h10v7H7z" ${S}/>`),
+  other: SVG(`<path d="M3.5 12.3V4.5a1 1 0 011-1h7.8a1 1 0 01.7.3l8 8a1 1 0 010 1.4l-7.8 7.8a1 1 0 01-1.4 0l-8-8a1 1 0 01-.3-.7z" ${S}/><circle cx="8" cy="8" r="1.4" ${S}/>`),
+};
+
+const CATEGORY_RULES = [
+  ['preowned', /pre-?owned|used|refurb|second|trade/],
+  ['services', /service|repair|install|setup|labou?r|support/],
+  ['smarthome', /smart ?home|home|iot|security|doorbell/],
+  /* before phones: headphones and earphones are audio */
+  ['audio', /audio|headphone|earbud|earphone|speaker|sound|music/],
+  ['phones', /phone|mobile|smartphone|iphone|android|cell/],
+  ['tablets', /tablet|ipad/],
+  ['laptops', /laptop|notebook|computer|macbook|chromebook|\bpcs?\b/],
+  ['monitors', /monitor|display|screen|\btvs?\b|television/],
+  ['wearables', /wear|watch|band|fitness/],
+  ['gaming', /gam|console|controller|playstation|xbox|nintendo/],
+  ['cameras', /camera|photo|video|drone/],
+  ['networking', /network|router|wi-?fi|modem|mesh|ethernet/],
+  ['storage', /storage|memory|ssd|\bsd\b|drive|flash/],
+  ['power', /power|batter|charger|charging/],
+  ['cables', /cable|adapter|connector|hub|dock/],
+  ['printers', /print|ink|toner|scanner/],
+  ['accessories', /accessor|case|cover|protector|glass|mount|stand/],
+];
+
+export function categoryIconKey(name) {
+  const n = String(name == null ? '' : name).toLowerCase();
+  for (const [key, re] of CATEGORY_RULES) if (re.test(n)) return key;
+  return 'other';
+}
+
+export function categoryIcon(name) {
+  return CATEGORY_ICONS[categoryIconKey(name)];
+}
+
+/* A category on the Sell screen's first view: its colour and icon, its name,
+   and how many of its products can be sold now. */
+export function categoryTile({ name, count, sellable } = {}) {
+  const label = String(name == null ? '' : name);
+  return `
+    <button class="cat-tile" data-open-cat="${esc(label)}" type="button" style="--cat:${catColor(label)}">
+      <span class="ct-icon">${categoryIcon(label)}</span>
+      <span class="ct-name">${esc(label === 'Uncategorized' ? $t('Uncategorized') : label)}</span>
+      <span class="ct-meta">${esc($tn('{n} product', '{n} products', Number(count) || 0))}${sellable < count ? ` · ${esc($t('{n} available', { n: Number(sellable) || 0 }))}` : ''}</span>
+    </button>`;
+}
+
+export function productTile(product, { fmt, available, showCategory = true } = {}) {
+  const p = product || {};
+  const money = fmt || ((v) => String(v));
+  const isService = p.itemType === 'service';
+  /* the caller passes what the open cart leaves on the shelf; without it the
+     tile falls back to the raw server figure. */
+  const avail = available == null
+    ? (p.isSerialized ? (p.serials || []).length : (Number(p.onHand) || 0))
+    : available;
+  const out = !isService && avail <= 0;
+  const stock = isService
+    ? `<span class="pt-stock pt-service">${$t('Service')}</span>`
+    : `<span class="pt-stock${out ? ' pt-out' : ''}">${out ? $t('Out of stock') : (p.isSerialized ? $tn('{n} unit', '{n} units', avail) : $t('{n} in stock', { n: avail }))}</span>`;
+  return `
+    <button class="prod-card${out ? ' out' : ''}" data-add="${esc(p.id)}" type="button">
+      ${showCategory ? `<span class="pt-cat" style="background:${catColor(p.category)}">${esc(p.category)}</span>` : ''}
+      <span class="pt-name">${esc(p.name)}</span>
+      <span class="pt-foot">
+        <span class="pt-price">${esc(money(p.retailPrice))}</span>
+        ${stock}
+      </span>
+      ${p.isSerialized ? `<span class="pt-badge">${$t('IMEI')}</span>` : ''}
+      ${lockedFlag(p) ? `<span class="pt-badge pt-lock">${$t('Locked')}</span>` : ''}
+    </button>`;
+}
+
+/* The running total, pinned above the tab bar on phones and tablets. Its body
+   opens the full cart; its button charges. Nothing at all when the cart is
+   empty - a bar reading "0 items" is just a smaller way to be in the way. */
+export function cartBar({ count, total, fmt } = {}) {
+  const n = Number(count) || 0;
+  if (n <= 0) return '';
+  const money = fmt || ((v) => String(v));
+  return `
+    <button class="cb-open" data-open-cart type="button">
+      <span class="cb-count">${n}</span>
+      <span class="cb-label">${esc($tn('{n} item', '{n} items', n))}</span>
+      <strong class="cb-total">${esc(money(total))}</strong>
+    </button>
+    <button class="btn cb-charge" data-charge type="button">${$t('Charge')}</button>`;
+}
+
+/* ---- Structural pieces every screen was hand-rolling ----
+   Each takes escaped-by-default text fields, plus an explicit *Html field for
+   the cases where a screen composes its own markup. Keeping the two apart is
+   what stops "it needed markup here" from quietly turning into an unescaped
+   value somewhere else. */
+
+export function screenHead({ title, sub, subHtml, actions } = {}) {
+  const line = subHtml || (sub ? esc(sub) : '');
+  return `
+    <header class="scr-head">
+      <div class="scr-title">
+        <h2>${esc(title)}</h2>
+        ${line ? `<p>${line}</p>` : ''}
+      </div>
+      ${actions || ''}
+    </header>`;
+}
+
+export function sectionHead({ title, aside, asideHtml } = {}) {
+  const right = asideHtml || (aside ? `<span class="muted">${esc(aside)}</span>` : '');
+  return `<div class="sect-head"><h3>${esc(title)}</h3>${right}</div>`;
+}
+
+export function statRow(stats, extraCls) {
+  return `<div class="stat-row${extraCls ? ' ' + esc(extraCls) : ''}">${(stats || []).map((s) => `
+    <div class="stat"><span>${esc(s.label)}</span><strong${s.cls ? ` class="${esc(s.cls)}"` : ''}>${s.valueHtml || esc(s.value)}</strong></div>`).join('')}</div>`;
+}
+
+export function rankRow({ idx, idxCls, name, meta, metaHtml, rightHtml } = {}) {
+  const metaLine = metaHtml || (meta ? esc(meta) : '');
+  return `
+    <div class="rank-row">
+      ${idx == null ? '' : `<span class="rank-idx${idxCls ? ' ' + esc(idxCls) : ''}">${esc(idx)}</span>`}
+      <div class="rank-main">
+        <div class="rank-name">${esc(name)}</div>
+        ${metaLine ? `<div class="muted">${metaLine}</div>` : ''}
+      </div>
+      ${rightHtml || ''}
+    </div>`;
+}
+
+export function rankList(rows, extraCls) {
+  return `<div class="rank-list${extraCls ? ' ' + esc(extraCls) : ''}">${(rows || []).map((r) => rankRow(r)).join('')}</div>`;
+}
+
+/* The table boilerplate only. Screens keep building their own <tr>s, because
+   that is where every per-screen decision lives; what repeated was the wrap,
+   the thead and the right-alignment of numeric columns. */
+export function dataTable({ head, bodyHtml, footHtml, extraCls } = {}) {
+  const cols = (head || []).map((h) => `<th${h.num ? ' class="num"' : ''}>${esc(h.label)}</th>`).join('');
+  return `
+    <div class="table-wrap">
+      <table class="data-table${extraCls ? ' ' + esc(extraCls) : ''}">
+        ${cols ? `<thead><tr>${cols}</tr></thead>` : ''}
+        <tbody>${bodyHtml || ''}</tbody>
+        ${footHtml ? `<tfoot>${footHtml}</tfoot>` : ''}
+      </table>
+    </div>`;
+}
